@@ -3,6 +3,7 @@
 #include <array>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -154,7 +155,14 @@ EigenMatrixView<T, NRows, NCols, Options> asEigenMatrixView(const Reader auto& b
     };
     auto bytes = to_span(blob);
 
-    const std::size_t expected = rows * cols * sizeof(T);
+    if (rows != 0 && cols != 0 && rows > std::numeric_limits<std::size_t>::max() / cols) {
+        throw DeserializationError("asEigenMatrixView: rows * cols overflows");
+    }
+    const std::size_t element_count = rows * cols;
+    if (element_count != 0 && sizeof(T) > std::numeric_limits<std::size_t>::max() / element_count) {
+        throw DeserializationError("asEigenMatrixView: element count * sizeof(T) overflows");
+    }
+    const std::size_t expected = element_count * sizeof(T);
     if (bytes.size() != expected) {
         throw DeserializationError(
             "asEigenMatrixView expected " + std::to_string(expected) + " bytes, but found " + std::to_string(bytes.size())

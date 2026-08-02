@@ -505,6 +505,30 @@ public:
     }
     ~MsgPackRootSerializer() { msgpack_sbuffer_destroy(&sbuf); }
 
+    // sbuf owns a raw malloc'd buffer (sbuf.data), freed unconditionally by
+    // the destructor above - an implicit memberwise copy would alias that
+    // pointer between two instances and double-free it. pk also holds a
+    // pointer back to &sbuf set at construction time, so it can't just be
+    // memberwise-copied/moved either; it must be re-pointed at this
+    // instance's sbuf. Not copyable; movable via explicit re-init of pk.
+    MsgPackRootSerializer(const MsgPackRootSerializer&) = delete;
+    MsgPackRootSerializer& operator=(const MsgPackRootSerializer&) = delete;
+
+    MsgPackRootSerializer(MsgPackRootSerializer&& other) noexcept {
+        sbuf = other.sbuf;
+        other.sbuf.data = nullptr; other.sbuf.size = 0; other.sbuf.alloc = 0;
+        msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
+    }
+    MsgPackRootSerializer& operator=(MsgPackRootSerializer&& other) noexcept {
+        if (this != &other) {
+            msgpack_sbuffer_destroy(&sbuf);
+            sbuf = other.sbuf;
+            other.sbuf.data = nullptr; other.sbuf.size = 0; other.sbuf.alloc = 0;
+            msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
+        }
+        return *this;
+    }
+
     ZBuffer finish() {
         if (sbuf.size == 0) return ZBuffer();
         // steal buffer
