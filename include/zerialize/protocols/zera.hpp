@@ -627,8 +627,13 @@ struct RootSerializer {
         write_header32(12, env_size);
         write_header32(16, static_cast<std::uint32_t>(arena_ofs));
 
-        std::memcpy(out.data() + HeaderSize, env_.data(), env_.size());
-        std::memcpy(out.data() + arena_ofs, arena_.data(), arena_.size());
+        // env_/arena_ can be empty (e.g. a payload with no out-of-line
+        // strings or blobs never touches arena_) - vector::data() is then
+        // permitted to return nullptr, and memcpy's source argument must be
+        // non-null even for a 0-byte copy. Guard both, matching the
+        // convention already used for every other memcpy in this file below.
+        if (!env_.empty()) std::memcpy(out.data() + HeaderSize, env_.data(), env_.size());
+        if (!arena_.empty()) std::memcpy(out.data() + arena_ofs, arena_.data(), arena_.size());
 
         return ZBuffer(std::move(out));
     }
