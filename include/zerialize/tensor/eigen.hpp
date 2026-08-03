@@ -80,11 +80,11 @@ public:
         if (owned_) return *owned_;
         if constexpr (NRows == Eigen::Dynamic || NCols == Eigen::Dynamic) {
             MatrixType out(static_cast<Eigen::Index>(rows_), static_cast<Eigen::Index>(cols_));
-            std::memcpy(out.data(), bytes_.data(), bytes_.size());
+            if (!bytes_.empty()) std::memcpy(out.data(), bytes_.data(), bytes_.size());
             return out;
         } else {
             MatrixType out;
-            std::memcpy(out.data(), bytes_.data(), bytes_.size());
+            if (!bytes_.empty()) std::memcpy(out.data(), bytes_.data(), bytes_.size());
             return out;
         }
     }
@@ -178,11 +178,11 @@ EigenMatrixView<T, NRows, NCols, Options> asEigenMatrixView(const Reader auto& b
         info.byte_size = bytes.size();
         if constexpr (NRows == Eigen::Dynamic || NCols == Eigen::Dynamic) {
             MatrixType copy(static_cast<Eigen::Index>(rows), static_cast<Eigen::Index>(cols));
-            std::memcpy(copy.data(), bytes.data(), bytes.size());
+            if (!bytes.empty()) std::memcpy(copy.data(), bytes.data(), bytes.size());
             return ViewType(std::move(copy), rows, cols, info);
         } else {
             MatrixType copy;
-            std::memcpy(copy.data(), bytes.data(), bytes.size());
+            if (!bytes.empty()) std::memcpy(copy.data(), bytes.data(), bytes.size());
             return ViewType(std::move(copy), rows, cols, info);
         }
     };
@@ -201,11 +201,11 @@ EigenMatrixView<T, NRows, NCols, Options> asEigenMatrixView(const Reader auto& b
             info.reason = tensor::TensorViewReason::Misaligned;
             if constexpr (NRows == Eigen::Dynamic || NCols == Eigen::Dynamic) {
                 MatrixType copy(static_cast<Eigen::Index>(rows), static_cast<Eigen::Index>(cols));
-                std::memcpy(copy.data(), bytes.data(), bytes.size());
+                if (!bytes.empty()) std::memcpy(copy.data(), bytes.data(), bytes.size());
                 return ViewType(std::move(copy), rows, cols, info);
             } else {
                 MatrixType copy;
-                std::memcpy(copy.data(), bytes.data(), bytes.size());
+                if (!bytes.empty()) std::memcpy(copy.data(), bytes.data(), bytes.size());
                 return ViewType(std::move(copy), rows, cols, info);
             }
         }
