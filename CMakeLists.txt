@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(zerialize VERSION 1.0 LANGUAGES CXX)
+project(zerialize VERSION 1.0.1 LANGUAGES CXX)
 
 include(FetchContent)
 
