@@ -99,10 +99,13 @@ class CborDeserializer {
         uint8_t b = buf_[p];
         Head h{}; h.major = b >> 5; h.addl = b & 0x1F; h.indefinite = false; h.hlen = 1; h.val = 0;
         if (h.major == 7) {
-            // simple/float encoding: header is 1 byte for floats; body size depends on addl
-            if (h.addl == 25) { h.val = 2; }           // half (2 bytes)
-            else if (h.addl == 26) { h.val = 4; }      // float32
-            else if (h.addl == 27) { h.val = 8; }      // float64
+            // simple/float encoding: header is 1 byte for floats; body size depends on addl.
+            // The payload bytes must be validated here (not just at read time in asDouble/
+            // asFloat), otherwise a truncated float marker with no payload lets those
+            // accessors read past the end of buf_.
+            if (h.addl == 25) { ensure(p+3 <= buf_.size(), "CBOR: truncated f16"); h.val = 2; }           // half (2 bytes)
+            else if (h.addl == 26) { ensure(p+5 <= buf_.size(), "CBOR: truncated f32"); h.val = 4; }      // float32
+            else if (h.addl == 27) { ensure(p+9 <= buf_.size(), "CBOR: truncated f64"); h.val = 8; }      // float64
             else if (h.addl == 24) {                   // simple value (next 1 byte)
                 ensure(p+2 <= buf_.size(), "CBOR: truncated simple(24)");
                 h.hlen = 2; h.val = 0;
@@ -331,6 +334,7 @@ public:
                 auto kh = read_head(q);
                 std::string_view ksv;
                 if (kh.major==3 && !kh.indefinite) {
+                    ensure(q + kh.hlen + kh.val <= buf_.size(), "CBOR: truncated map key");
                     ksv = std::string_view(reinterpret_cast<const char*>(&buf_[q+kh.hlen]), static_cast<std::size_t>(kh.val));
                 } else {
                     // fallback: decode key to string
@@ -374,23 +378,29 @@ public:
             using difference_type   = std::ptrdiff_t;
             using reference         = std::string_view;
 
+            // Mirrors CborDeserializer::read_head()/skip() but operates on an
+            // explicit span instead of buf_ - every bounds check below has a
+            // matching one in the outer implementation; this copy must keep
+            // them in sync or a truncated map read through mapKeys() reads
+            // past the end of the buffer.
             struct H { uint8_t major, addl; uint64_t val; std::size_t hlen; bool indefinite; };
             static H read_head(std::span<const uint8_t> b, std::size_t p) {
+                ensure(p < b.size(), "CBOR: truncated");
                 uint8_t bb = b[p];
                 H h{}; h.major = bb>>5; h.addl=bb&0x1F; h.hlen=1; h.val=0; h.indefinite=false;
                 if (h.major==7) {
-                    if (h.addl==25) { h.val=2; }
-                    else if (h.addl==26) { h.val=4; }
-                    else if (h.addl==27) { h.val=8; }
-                    else if (h.addl==24) { h.hlen=2; }
+                    if (h.addl==25) { ensure(p+3 <= b.size(), "CBOR: truncated f16"); h.val=2; }
+                    else if (h.addl==26) { ensure(p+5 <= b.size(), "CBOR: truncated f32"); h.val=4; }
+                    else if (h.addl==27) { ensure(p+9 <= b.size(), "CBOR: truncated f64"); h.val=8; }
+                    else if (h.addl==24) { ensure(p+2 <= b.size(), "CBOR: truncated simple(24)"); h.hlen=2; }
                     else if (h.addl==31) { h.indefinite=true; }
                     return h;
                 }
                 if (h.addl<24) { h.val=h.addl; }
-                else if (h.addl==24) { h.val=b[p+1]; h.hlen=2; }
-                else if (h.addl==25) { h.val=(uint64_t)b[p+1]<<8 | b[p+2]; h.hlen=3; }
-                else if (h.addl==26) { h.val=((uint64_t)b[p+1]<<24)|((uint64_t)b[p+2]<<16)|((uint64_t)b[p+3]<<8)|b[p+4]; h.hlen=5; }
-                else if (h.addl==27) { h.val=((uint64_t)b[p+1]<<56)|((uint64_t)b[p+2]<<48)|((uint64_t)b[p+3]<<40)|((uint64_t)b[p+4]<<32)|((uint64_t)b[p+5]<<24)|((uint64_t)b[p+6]<<16)|((uint64_t)b[p+7]<<8)|b[p+8]; h.hlen=9; }
+                else if (h.addl==24) { ensure(p+2 <= b.size(), "CBOR: truncated u8"); h.val=b[p+1]; h.hlen=2; }
+                else if (h.addl==25) { ensure(p+3 <= b.size(), "CBOR: truncated u16"); h.val=(uint64_t)b[p+1]<<8 | b[p+2]; h.hlen=3; }
+                else if (h.addl==26) { ensure(p+5 <= b.size(), "CBOR: truncated u32"); h.val=((uint64_t)b[p+1]<<24)|((uint64_t)b[p+2]<<16)|((uint64_t)b[p+3]<<8)|b[p+4]; h.hlen=5; }
+                else if (h.addl==27) { ensure(p+9 <= b.size(), "CBOR: truncated u64"); h.val=((uint64_t)b[p+1]<<56)|((uint64_t)b[p+2]<<48)|((uint64_t)b[p+3]<<40)|((uint64_t)b[p+4]<<32)|((uint64_t)b[p+5]<<24)|((uint64_t)b[p+6]<<16)|((uint64_t)b[p+7]<<8)|b[p+8]; h.hlen=9; }
                 else if (h.addl==31) { h.indefinite=true; }
                 return h;
             }
@@ -399,14 +409,14 @@ public:
                 switch (h.major) {
                     case 0: case 1: return q;
                     case 2: case 3:
-                        if (!h.indefinite) return q + (std::size_t)h.val;
-                        for (;;) { if (b[q]==0xFF) return q+1; auto ch=read_head(b,q); q += ch.hlen + (std::size_t)ch.val; }
+                        if (!h.indefinite) { ensure(q + (std::size_t)h.val <= b.size(), "CBOR: truncated string/blob"); return q + (std::size_t)h.val; }
+                        for (;;) { ensure(q < b.size(), "CBOR: truncated indef str/blob"); if (b[q]==0xFF) return q+1; auto ch=read_head(b,q); q += ch.hlen + (std::size_t)ch.val; }
                     case 4:
                         if (!h.indefinite) { for (uint64_t i=0;i<h.val;++i) q=skip(b,q); return q; }
-                        for(;;){ if(b[q]==0xFF) return q+1; q=skip(b,q);}        
+                        for(;;){ ensure(q < b.size(), "CBOR: truncated indef arr"); if(b[q]==0xFF) return q+1; q=skip(b,q);}
                     case 5:
                         if (!h.indefinite) { for (uint64_t i=0;i<h.val;++i){ q=skip(b,q); q=skip(b,q);} return q; }
-                        for(;;){ if(b[q]==0xFF) return q+1; q=skip(b,q); q=skip(b,q);} 
+                        for(;;){ ensure(q < b.size(), "CBOR: truncated indef map"); if(b[q]==0xFF) return q+1; q=skip(b,q); q=skip(b,q);}
                     case 6: return skip(b,q);
                     case 7:
                         if (h.addl==25) return q+2; if (h.addl==26) return q+4; if (h.addl==27) return q+8; return q;
@@ -417,6 +427,7 @@ public:
             reference operator*() const {
                 auto kh = read_head(buf, q);
                 if (kh.major==3 && !kh.indefinite) {
+                    ensure(q + kh.hlen + kh.val <= buf.size(), "CBOR: truncated map key");
                     return std::string_view(reinterpret_cast<const char*>(&buf[q+kh.hlen]), (std::size_t)kh.val);
                 }
                 // fallback: materialize
@@ -450,7 +461,7 @@ public:
                 std::size_t q = start + h.hlen; for (uint64_t i=0;i<h.val;++i){ q = iterator::skip(buf,q); q = iterator::skip(buf,q);} it.q = q; it.indefinite=false; it.remaining=0; return it;
             } else {
                 // find break
-                std::size_t q = start + h.hlen; for(;;){ if (buf[q]==0xFF){ it.q=q+1; break; } q = iterator::skip(buf,q); q = iterator::skip(buf,q);} it.indefinite=true; return it;
+                std::size_t q = start + h.hlen; for(;;){ ensure(q < buf.size(), "CBOR: truncated indef map"); if (buf[q]==0xFF){ it.q=q+1; break; } q = iterator::skip(buf,q); q = iterator::skip(buf,q);} it.indefinite=true; return it;
             }
         }
     };
