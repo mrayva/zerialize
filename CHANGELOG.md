@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-08-13
+
+Two new protocol backends.
+
+### Added
+
+- **BEVE** (`zerialize::Beve`, [`protocols/beve.hpp`](include/zerialize/protocols/beve.hpp)):
+  the `Deserializer` adapts [glaze](https://github.com/stephenberry/glaze)'s
+  `lazy_beve_document`/`lazy_beve_view` for zero-copy, bounds-checked reading;
+  the `Serializer` is a hand-rolled writer with no runtime dependency on
+  glaze (glaze's own write path can't produce BEVE's typed-array encoding
+  from a dynamic value tree, which would silently break blob
+  round-tripping). Opt-in via `ZERIALIZE_ENABLE_BEVE` (default **off**),
+  since glaze's own `CMakeLists.txt` hard-requires C++23, unlike every
+  other protocol here, which build under this project's normal C++20
+  baseline. See [`protocols/BEVE.md`](include/zerialize/protocols/BEVE.md).
+- **BSON** (`zerialize::Bson`, [`protocols/bson.hpp`](include/zerialize/protocols/bson.hpp)):
+  the `Serializer` wraps `jsoncons::bson::bson_bytes_encoder` (already a
+  dependency, for CBOR); the `Deserializer` is hand-rolled and independent
+  of jsoncons, matching the precedent `cbor.hpp` already set. Enabled via
+  `ZERIALIZE_ENABLE_BSON` (default **on** — no new dependency, no C++
+  standard change). Documents BSON's two format-inherent constraints (no
+  top-level scalar; no unsigned 64-bit wire type) in
+  [`protocols/BSON.md`](include/zerialize/protocols/BSON.md).
+
+### Security
+
+- **BEVE**: found and fixed a heap-buffer-overflow reachable from untrusted
+  input in the underlying library: glaze v8.0.0's lazy
+  `operator[](size_t)` on generic arrays doesn't verify the returned
+  element pointer is within the buffer when the declared element count
+  exceeds what's actually present. `BeveDeserializer` now bounds-checks
+  every indexing/lookup result itself before trusting it (confirmed fixed
+  under AddressSanitizer).
+
 ## [1.0.1] - 2026-08-02
 
 A security/correctness hardening pass across every protocol backend, found and
