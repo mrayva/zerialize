@@ -25,6 +25,9 @@
 #ifdef ZERIALIZE_HAS_ZERA
 #include <zerialize/protocols/zera.hpp>
 #endif
+#ifdef ZERIALIZE_HAS_BEVE
+#include <zerialize/protocols/beve.hpp>
+#endif
 
 #include <xtensor/generators/xbuilder.hpp>
 
@@ -547,6 +550,49 @@ void test_msgpack_failure_modes() {
     std::cout << "== MsgPack corruption tests passed ==\n\n";
 }
 
+#ifdef ZERIALIZE_HAS_BEVE
+void test_beve_failure_modes() {
+    std::cout << "== BEVE corruption tests ==\n";
+
+    bool truncated_array = expect_deserialization_error([](){
+        // 0x05 = generic-array header, 0x04 = compressed size (count=1), no
+        // element bytes follow. glz::lazy_beve_view::operator[](size_t) does
+        // not itself flag this as an error for generic arrays (verified with
+        // ASan against glaze v8.0.0: it silently returns a view pointing at
+        // end-of-buffer) -- beve.hpp's own checkChild() closes that gap.
+        std::vector<uint8_t> bad = {0x05, 0x04};
+        BeveDeserializer rd(bad);
+        (void)rd[0];
+    });
+    if (!truncated_array) {
+        throw std::runtime_error("beve truncated generic array should throw DeserializationError");
+    }
+
+    bool truncated_blob = expect_deserialization_error([](){
+        // 0x14 = typed uint8-array header, size claims 50 elements, only 2
+        // payload bytes are actually present.
+        std::vector<uint8_t> bad = {0x14, uint8_t(50 << 2), 0xAB, 0xCD};
+        BeveDeserializer rd(bad);
+        (void)rd.asBlob();
+    });
+    if (!truncated_blob) {
+        throw std::runtime_error("beve truncated blob should throw DeserializationError");
+    }
+
+    bool truncated_scalar = expect_deserialization_error([](){
+        // 0x69 = int64 number header, only 1 of the 8 payload bytes present.
+        std::vector<uint8_t> bad = {0x69, 0x01};
+        BeveDeserializer rd(bad);
+        (void)rd.asInt64();
+    });
+    if (!truncated_scalar) {
+        throw std::runtime_error("beve truncated scalar should throw DeserializationError");
+    }
+
+    std::cout << "== BEVE corruption tests passed ==\n\n";
+}
+#endif // ZERIALIZE_HAS_BEVE
+
 void test_zer_specific() {
     std::cout << "== Zera specific tests ==\n";
 
@@ -681,6 +727,9 @@ int main() {
     #ifdef ZERIALIZE_HAS_ZERA
     test_protocol_dsl<Zera>();
     #endif
+    #ifdef ZERIALIZE_HAS_BEVE
+    test_protocol_dsl<Beve>();
+    #endif
 
     // Dynamic serialization (runtime-built values)
     #ifdef ZERIALIZE_HAS_JSON
@@ -698,6 +747,9 @@ int main() {
     #ifdef ZERIALIZE_HAS_ZERA
     test_dynamic_serialization<Zera>();
     #endif
+    #ifdef ZERIALIZE_HAS_BEVE
+    test_dynamic_serialization<Beve>();
+    #endif
 
     // Custom struct tests
     #ifdef ZERIALIZE_HAS_JSON
@@ -714,6 +766,9 @@ int main() {
     #endif
     #ifdef ZERIALIZE_HAS_ZERA
     test_custom_structs<Zera>();
+    #endif
+    #ifdef ZERIALIZE_HAS_BEVE
+    test_custom_structs<Beve>();
     #endif
 
     // Failure-mode coverage
@@ -736,7 +791,11 @@ int main() {
     test_zer_specific();
     test_tensor_view_alignment();
     #endif
- 
+    #ifdef ZERIALIZE_HAS_BEVE
+    test_failure_modes<Beve>();
+    test_beve_failure_modes();
+    #endif
+
     // Translate cross-protocol (both directions) built with the same DSL
     #if defined(ZERIALIZE_HAS_JSON) && defined(ZERIALIZE_HAS_MSGPACK)
     test_translate_dsl<JSON, MsgPack>();
@@ -766,6 +825,20 @@ int main() {
     #if defined(ZERIALIZE_HAS_ZERA) && defined(ZERIALIZE_HAS_CBOR)
     test_translate_dsl<Zera, CBOR>();
     test_translate_dsl<CBOR, Zera>();
+    #endif
+
+    // BEVE ↔ other protocols
+    #if defined(ZERIALIZE_HAS_BEVE) && defined(ZERIALIZE_HAS_JSON)
+    test_translate_dsl<Beve, JSON>();
+    test_translate_dsl<JSON, Beve>();
+    #endif
+    #if defined(ZERIALIZE_HAS_BEVE) && defined(ZERIALIZE_HAS_MSGPACK)
+    test_translate_dsl<Beve, MsgPack>();
+    test_translate_dsl<MsgPack, Beve>();
+    #endif
+    #if defined(ZERIALIZE_HAS_BEVE) && defined(ZERIALIZE_HAS_ZERA)
+    test_translate_dsl<Beve, Zera>();
+    test_translate_dsl<Zera, Beve>();
     #endif
 
     #if defined(ZERIALIZE_HAS_FLEXBUFFERS) && defined(ZERIALIZE_HAS_MSGPACK)

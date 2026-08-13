@@ -10,6 +10,10 @@ option(ZERIALIZE_ENABLE_FLEXBUFFERS "Enable FlexBuffers (via FlatBuffers)" ON)
 option(ZERIALIZE_ENABLE_JSON        "Enable JSON (via yyjson)" ON)
 option(ZERIALIZE_ENABLE_CBOR        "Enable CBOR (via jsoncons)" ON)
 option(ZERIALIZE_ENABLE_MSGPACK     "Enable MessagePack (via msgpack-c)" ON)
+# Off by default: unlike the other protocols above, enabling this raises the
+# C++ standard required by the *whole* zerialize interface target to C++23
+# (glaze's own CMakeLists hard-requires it). See the BEVE block below.
+option(ZERIALIZE_ENABLE_BEVE        "Enable BEVE (via glaze; requires a C++23 compiler)" OFF)
 
 option(ZERIALIZE_ENABLE_XTENSOR     "Enable xtensor backend" ON)
 option(ZERIALIZE_ENABLE_EIGEN       "Enable Eigen backend" ON)
@@ -164,6 +168,28 @@ if(ZERIALIZE_ENABLE_MSGPACK)
 
   target_link_libraries(${PROJECT_NAME} INTERFACE zerialize_msgpack)
   target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_MSGPACK=1)
+endif()
+
+# Protocol: BEVE (reader adapts glaze's lazy BEVE view; writer is hand-rolled
+# and has no runtime dependency on glaze -- see BEVE.md for why)
+#
+# glaze is header-only, but its own CMakeLists unconditionally requires
+# cxx_std_23 on its INTERFACE target. Linking it into ${PROJECT_NAME}
+# (also an INTERFACE target) propagates that requirement to any consumer
+# that enables this option, which is why it defaults OFF and is documented
+# here rather than silently raising the floor for every zerialize user.
+if(ZERIALIZE_ENABLE_BEVE)
+  if(NOT TARGET glaze::glaze)
+    FetchContent_Declare(
+        glaze
+        GIT_REPOSITORY https://github.com/stephenberry/glaze.git
+        GIT_TAG v8.0.0
+    )
+    FetchContent_MakeAvailable(glaze)
+  endif()
+
+  target_link_libraries(${PROJECT_NAME} INTERFACE glaze::glaze)
+  target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_BEVE=1)
 endif()
 
 # -------------------

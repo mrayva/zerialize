@@ -19,6 +19,7 @@ Zero-copy multi-format serialization/deserialization for c++20.
 *   **MessagePack** (compact binary serialization)
 *   **CBOR** (via jsoncons)
 *   **ZERA** (built-in, dependency-free binary protocol) — see [`include/zerialize/protocols/ZERA.md`](include/zerialize/protocols/ZERA.md)
+*   **BEVE** (via [glaze](https://github.com/stephenberry/glaze)'s lazy BEVE reader) — opt-in, off by default; see [`include/zerialize/protocols/BEVE.md`](include/zerialize/protocols/BEVE.md) (enabling it, via `ZERIALIZE_ENABLE_BEVE`, raises the required C++ standard from C++20 to C++23)
 *   **NOTE:** Zerialize supports the least-common-denominator of serializeable objects: arrays, maps with string keys, and primitives: integers, floats, strings, but also blobs.
 
 ## Building
@@ -31,6 +32,7 @@ See [CMAKEHOWTO.md](CMAKEHOWTO.md) for details.
 
 Protocol docs:
 - `include/zerialize/protocols/ZERA.md`
+- `include/zerialize/protocols/BEVE.md`
 
 ## Usage
 
