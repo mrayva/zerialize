@@ -28,6 +28,9 @@
 #ifdef ZERIALIZE_HAS_BEVE
 #include <zerialize/protocols/beve.hpp>
 #endif
+#ifdef ZERIALIZE_HAS_BSON
+#include <zerialize/protocols/bson.hpp>
+#endif
 
 #include <xtensor/generators/xbuilder.hpp>
 
@@ -41,6 +44,19 @@ bool expect_deserialization_error(F&& fn) {
     try {
         std::forward<F>(fn)();
     } catch (const DeserializationError&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+// Small helper to assert we surface SerializationError boundaries.
+template<class F>
+bool expect_serialization_error(F&& fn) {
+    try {
+        std::forward<F>(fn)();
+    } catch (const SerializationError&) {
         return true;
     } catch (...) {
         return false;
@@ -593,6 +609,154 @@ void test_beve_failure_modes() {
 }
 #endif // ZERIALIZE_HAS_BEVE
 
+#ifdef ZERIALIZE_HAS_BSON
+void test_bson_failure_modes() {
+    std::cout << "== BSON corruption tests ==\n";
+
+    bool truncated_doc = expect_deserialization_error([](){
+        // Declares a 20-byte document but the buffer is only 6 bytes.
+        std::vector<uint8_t> bad = {20,0,0,0, 0x08, 'x'};
+        bsonjc::BsonDeserializer rd(bad);
+        for (auto k : rd.mapKeys()) (void)k;
+    });
+    if (!truncated_doc) {
+        throw std::runtime_error("bson truncated document should throw DeserializationError");
+    }
+
+    bool unterminated_name = expect_deserialization_error([](){
+        // Element name never hits a 0x00 before the buffer ends.
+        std::vector<uint8_t> bad = {12,0,0,0, 0x08,'a','b','c','d','e','f','g'};
+        bsonjc::BsonDeserializer rd(bad);
+        (void)rd["a"];
+    });
+    if (!unterminated_name) {
+        throw std::runtime_error("bson unterminated element name should throw DeserializationError");
+    }
+
+    bool bare_scalar_root = expect_serialization_error([](){
+        (void)serialize<Bson>(42);
+    });
+    if (!bare_scalar_root) {
+        throw std::runtime_error("bson bare top-level scalar should throw SerializationError");
+    }
+
+    bool uint64_too_large = expect_serialization_error([](){
+        Bson::RootSerializer rs;
+        Bson::Serializer w(rs);
+        w.begin_map(1);
+        w.key("huge");
+        w.uint64(UINT64_MAX);
+        w.end_map();
+    });
+    if (!uint64_too_large) {
+        throw std::runtime_error("bson uint64 above INT64_MAX should throw SerializationError");
+    }
+
+    std::cout << "== BSON corruption tests passed ==\n\n";
+}
+
+// BSON gets its own DSL-style coverage rather than the generic
+// test_protocol_dsl<P>()/test_dynamic_serialization<P>(): several of their
+// cases serialize a bare array as the *root* value and assert isArray() on
+// the result, which BSON cannot round-trip. This isn't a bug in
+// BsonDeserializer -- it's a real BSON format constraint (confirmed against
+// jsoncons' own bson_parser, which unconditionally decodes the top level as
+// a document too): a document and an array are physically identical on the
+// wire, and only a *parent* element's header records which one a value is.
+// The root has no parent, so that information doesn't exist to recover.
+// Arrays nested anywhere below the root are unaffected (their parent
+// element header does carry a real type tag) -- see the last case below,
+// and BSON.md.
+void test_bson_specific() {
+    std::cout << "== BSON specific tests ==\n";
+    using V = Bson::Deserializer;
+
+    test_serialization<Bson>("map root with nested array and map",
+        [](){
+            return serialize<Bson>( zmap<"a","b">(
+                7,
+                zvec("x", zmap<"n">(44))
+            ));
+        },
+        [](const V& v){
+            if (!v.isMap()) return false;
+            if (!v["a"].isInt() || v["a"].asInt64()!=7) return false;
+            auto b = v["b"];
+            if (!b.isArray() || b.arraySize()!=2) return false;
+            if (b[0].asString()!="x") return false;
+            return b[1].isMap() && b[1]["n"].asInt64()==44;
+        });
+
+    test_serialization<Bson>("mixed numeric types",
+        [](){
+            return serialize<Bson>( zmap<
+                "i8","u8","i32","u32","i64","u64","d"
+            >( int8_t(-5), uint8_t(200), int32_t(-123456), uint32_t(987654321u),
+               int64_t(-7777777777LL), uint64_t(9999999999ULL), 3.25 ) );
+        },
+        [](const V& v){
+            return v.isMap()
+                && v["i8"].asInt64()==-5
+                && v["u8"].asUInt64()==200
+                && v["i32"].asInt64()==-123456
+                && v["u32"].asUInt64()==987654321ULL
+                && v["i64"].asInt64()==-7777777777LL
+                && v["u64"].asUInt64()==9999999999ULL
+                && std::abs(v["d"].asDouble()-3.25)<1e-12;
+        });
+
+    test_serialization<Bson>("booleans, null, mapKeys()",
+        [](){
+            return serialize<Bson>( zmap<"t","f","n">( true, false, nullptr ) );
+        },
+        [](const V& v){
+            if (!v.isMap() || v["t"].asBool()!=true || v["f"].asBool()!=false || !v["n"].isNull()) return false;
+            std::set<std::string_view> keys;
+            for (std::string_view k : v.mapKeys()) keys.insert(k);
+            return keys.size()==3 && keys.count("t") && keys.count("f") && keys.count("n");
+        });
+
+    xt::xtensor<double, 2> tens{{1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}};
+    test_serialization<Bson>("tensor nested in map",
+        [&tens](){
+            return serialize<Bson>( zmap<"key1", "key2", "key3">(42, 3.14159, tens) );
+        },
+        [&tens](const V& v) {
+            auto a = xtensor::asXTensor<double>(v["key3"]);
+            return v["key1"].asInt32() == 42
+                && v["key2"].asDouble() == 3.14159
+                && a == tens;
+        });
+
+    // Arrays work fully once wrapped in a document key (the realistic BSON
+    // usage pattern -- MongoDB documents are conventionally always objects
+    // at the top level too).
+    test_serialization<Bson>("array wrapped in a map root",
+        [](){
+            return serialize<Bson>( zmap<"items">( zvec(1, 2, 3, "x") ) );
+        },
+        [](const V& v){
+            auto items = v["items"];
+            return v.isMap() && items.isArray() && items.arraySize()==4
+                && items[0].asInt64()==1 && items[2].asInt64()==3
+                && items[3].asString()=="x";
+        });
+
+    // Documented root-array limitation: a bare array root reads back as a
+    // document whose keys are the stringified indices, not as an array.
+    test_serialization<Bson>("bare array root reads back as a document",
+        [](){
+            return serialize<Bson>( zvec(10, 20, 30) );
+        },
+        [](const V& v){
+            return !v.isArray() && v.isMap()
+                && v["0"].asInt64()==10 && v["1"].asInt64()==20 && v["2"].asInt64()==30;
+        });
+
+    std::cout << "== BSON specific tests passed ==\n\n";
+}
+#endif // ZERIALIZE_HAS_BSON
+
 void test_zer_specific() {
     std::cout << "== Zera specific tests ==\n";
 
@@ -730,6 +894,9 @@ int main() {
     #ifdef ZERIALIZE_HAS_BEVE
     test_protocol_dsl<Beve>();
     #endif
+    // Bson is intentionally not run through test_protocol_dsl<P>() here --
+    // see test_bson_specific() for why (bare-array-root round-tripping is
+    // not something BSON's format supports) and for its own DSL coverage.
 
     // Dynamic serialization (runtime-built values)
     #ifdef ZERIALIZE_HAS_JSON
@@ -750,6 +917,8 @@ int main() {
     #ifdef ZERIALIZE_HAS_BEVE
     test_dynamic_serialization<Beve>();
     #endif
+    // Same reason as above: Bson skips the generic dynamic-serialization
+    // suite (it includes bare-array-root tensor cases).
 
     // Custom struct tests
     #ifdef ZERIALIZE_HAS_JSON
@@ -769,6 +938,9 @@ int main() {
     #endif
     #ifdef ZERIALIZE_HAS_BEVE
     test_custom_structs<Beve>();
+    #endif
+    #ifdef ZERIALIZE_HAS_BSON
+    test_custom_structs<Bson>();
     #endif
 
     // Failure-mode coverage
@@ -794,6 +966,11 @@ int main() {
     #ifdef ZERIALIZE_HAS_BEVE
     test_failure_modes<Beve>();
     test_beve_failure_modes();
+    #endif
+    #ifdef ZERIALIZE_HAS_BSON
+    test_failure_modes<Bson>();
+    test_bson_failure_modes();
+    test_bson_specific();
     #endif
 
     // Translate cross-protocol (both directions) built with the same DSL
@@ -839,6 +1016,20 @@ int main() {
     #if defined(ZERIALIZE_HAS_BEVE) && defined(ZERIALIZE_HAS_ZERA)
     test_translate_dsl<Beve, Zera>();
     test_translate_dsl<Zera, Beve>();
+    #endif
+
+    // BSON ↔ other protocols
+    #if defined(ZERIALIZE_HAS_BSON) && defined(ZERIALIZE_HAS_JSON)
+    test_translate_dsl<Bson, JSON>();
+    test_translate_dsl<JSON, Bson>();
+    #endif
+    #if defined(ZERIALIZE_HAS_BSON) && defined(ZERIALIZE_HAS_CBOR)
+    test_translate_dsl<Bson, CBOR>();
+    test_translate_dsl<CBOR, Bson>();
+    #endif
+    #if defined(ZERIALIZE_HAS_BSON) && defined(ZERIALIZE_HAS_MSGPACK)
+    test_translate_dsl<Bson, MsgPack>();
+    test_translate_dsl<MsgPack, Bson>();
     #endif
 
     #if defined(ZERIALIZE_HAS_FLEXBUFFERS) && defined(ZERIALIZE_HAS_MSGPACK)

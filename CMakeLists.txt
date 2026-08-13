@@ -9,6 +9,7 @@ include(FetchContent)
 option(ZERIALIZE_ENABLE_FLEXBUFFERS "Enable FlexBuffers (via FlatBuffers)" ON)
 option(ZERIALIZE_ENABLE_JSON        "Enable JSON (via yyjson)" ON)
 option(ZERIALIZE_ENABLE_CBOR        "Enable CBOR (via jsoncons)" ON)
+option(ZERIALIZE_ENABLE_BSON        "Enable BSON (via jsoncons)" ON)
 option(ZERIALIZE_ENABLE_MSGPACK     "Enable MessagePack (via msgpack-c)" ON)
 # Off by default: unlike the other protocols above, enabling this raises the
 # C++ standard required by the *whole* zerialize interface target to C++23
@@ -105,8 +106,15 @@ if(ZERIALIZE_ENABLE_JSON)
   target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_JSON=1)
 endif()
 
-# Protocol: jsoncons (CBOR)
-if(ZERIALIZE_ENABLE_CBOR)
+# Protocol: jsoncons (CBOR, BSON)
+#
+# Both CBOR and BSON encode through jsoncons' SAX-style bytes_encoders
+# (jsoncons::cbor::cbor_bytes_encoder / jsoncons::bson::bson_bytes_encoder);
+# their *readers* are hand-rolled (see cbor.hpp/bson.hpp) rather than using
+# jsoncons' own DOM/cursor readers, for zero-copy laziness and full control
+# over the Reader concept's random-access semantics. jsoncons is fetched
+# once here and shared by whichever of the two protocols is enabled.
+if(ZERIALIZE_ENABLE_CBOR OR ZERIALIZE_ENABLE_BSON)
   # Prefer an existing target
   if(TARGET jsoncons)
     target_link_libraries(${PROJECT_NAME} INTERFACE jsoncons)
@@ -129,10 +137,15 @@ if(ZERIALIZE_ENABLE_CBOR)
     elseif(DEFINED jsoncons_SOURCE_DIR)
       target_include_directories(${PROJECT_NAME} INTERFACE ${jsoncons_SOURCE_DIR}/include)
     else()
-      message(FATAL_ERROR "jsoncons not available for CBOR support")
+      message(FATAL_ERROR "jsoncons not available for CBOR/BSON support")
     endif()
   endif()
+endif()
+if(ZERIALIZE_ENABLE_CBOR)
   target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_CBOR=1)
+endif()
+if(ZERIALIZE_ENABLE_BSON)
+  target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_BSON=1)
 endif()
 
 # Protocol: msgpack-c (MessagePack)

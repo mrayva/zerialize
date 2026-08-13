@@ -18,6 +18,7 @@ Zero-copy multi-format serialization/deserialization for c++20.
 *   **Flexbuffers** (Google's schema-less binary format)
 *   **MessagePack** (compact binary serialization)
 *   **CBOR** (via jsoncons)
+*   **BSON** (writer via jsoncons, reader hand-rolled) — see [`include/zerialize/protocols/BSON.md`](include/zerialize/protocols/BSON.md) (BSON's top-level value is always a document or array — a bare scalar can't be serialized at the root, and a bare array root reads back as a document; see the doc for details)
 *   **ZERA** (built-in, dependency-free binary protocol) — see [`include/zerialize/protocols/ZERA.md`](include/zerialize/protocols/ZERA.md)
 *   **BEVE** (via [glaze](https://github.com/stephenberry/glaze)'s lazy BEVE reader) — opt-in, off by default; see [`include/zerialize/protocols/BEVE.md`](include/zerialize/protocols/BEVE.md) (enabling it, via `ZERIALIZE_ENABLE_BEVE`, raises the required C++ standard from C++20 to C++23)
 *   **NOTE:** Zerialize supports the least-common-denominator of serializeable objects: arrays, maps with string keys, and primitives: integers, floats, strings, but also blobs.
@@ -33,6 +34,7 @@ See [CMAKEHOWTO.md](CMAKEHOWTO.md) for details.
 Protocol docs:
 - `include/zerialize/protocols/ZERA.md`
 - `include/zerialize/protocols/BEVE.md`
+- `include/zerialize/protocols/BSON.md`
 
 ## Usage
 
