@@ -31,6 +31,9 @@
 #ifdef ZERIALIZE_HAS_BSON
 #include <zerialize/protocols/bson.hpp>
 #endif
+#ifdef ZERIALIZE_HAS_ION
+#include <zerialize/protocols/ion.hpp>
+#endif
 
 #include <xtensor/generators/xbuilder.hpp>
 
@@ -757,6 +760,56 @@ void test_bson_specific() {
 }
 #endif // ZERIALIZE_HAS_BSON
 
+#ifdef ZERIALIZE_HAS_ION
+void test_ion_failure_modes() {
+    std::cout << "== Ion corruption tests ==\n";
+
+    bool missing_bvm = expect_deserialization_error([](){
+        std::vector<uint8_t> bad = {0x21, 0x05}; // no binary version marker
+        IonDeserializer rd(bad);
+    });
+    if (!missing_bvm) {
+        throw std::runtime_error("ion missing BVM should throw DeserializationError");
+    }
+
+    bool struct_overflow = expect_deserialization_error([](){
+        // struct (VarUInt length) claiming a length far beyond the buffer.
+        std::vector<uint8_t> bad = {0xE0,0x01,0x00,0xEA, 0xDE, 0xFF,0xFF,0x7F};
+        IonDeserializer rd(bad);
+        for (auto k : rd.mapKeys()) (void)k;
+    });
+    if (!struct_overflow) {
+        throw std::runtime_error("ion oversized struct length should throw DeserializationError");
+    }
+
+    bool unresolvable_symbol = expect_deserialization_error([](){
+        // Field SID 10 (local) referenced with no symbol table defining it.
+        std::vector<uint8_t> bad = {0xE0,0x01,0x00,0xEA, 0xD2, 0x8A, 0x20};
+        IonDeserializer rd(bad);
+        for (auto k : rd.mapKeys()) (void)k;
+    });
+    if (!unresolvable_symbol) {
+        throw std::runtime_error("ion unresolvable symbol ID should throw DeserializationError");
+    }
+
+    bool shared_imports_rejected = expect_deserialization_error([](){
+        // Annotated ($ion_symbol_table) struct with a non-empty imports list
+        // (shared/imported symbol table) -- explicitly unsupported.
+        std::vector<uint8_t> bad = {
+            0xE0,0x01,0x00,0xEA,
+            0xE6, 0x81,0x83, 0xD3, 0x86, 0xB1, 0x20
+        };
+        IonDeserializer rd(bad);
+        (void)rd.isMap();
+    });
+    if (!shared_imports_rejected) {
+        throw std::runtime_error("ion shared/imported symbol table should throw DeserializationError");
+    }
+
+    std::cout << "== Ion corruption tests passed ==\n\n";
+}
+#endif // ZERIALIZE_HAS_ION
+
 void test_zer_specific() {
     std::cout << "== Zera specific tests ==\n";
 
@@ -894,6 +947,9 @@ int main() {
     #ifdef ZERIALIZE_HAS_BEVE
     test_protocol_dsl<Beve>();
     #endif
+    #ifdef ZERIALIZE_HAS_ION
+    test_protocol_dsl<Ion>();
+    #endif
     // Bson is intentionally not run through test_protocol_dsl<P>() here --
     // see test_bson_specific() for why (bare-array-root round-tripping is
     // not something BSON's format supports) and for its own DSL coverage.
@@ -916,6 +972,9 @@ int main() {
     #endif
     #ifdef ZERIALIZE_HAS_BEVE
     test_dynamic_serialization<Beve>();
+    #endif
+    #ifdef ZERIALIZE_HAS_ION
+    test_dynamic_serialization<Ion>();
     #endif
     // Same reason as above: Bson skips the generic dynamic-serialization
     // suite (it includes bare-array-root tensor cases).
@@ -941,6 +1000,9 @@ int main() {
     #endif
     #ifdef ZERIALIZE_HAS_BSON
     test_custom_structs<Bson>();
+    #endif
+    #ifdef ZERIALIZE_HAS_ION
+    test_custom_structs<Ion>();
     #endif
 
     // Failure-mode coverage
@@ -971,6 +1033,10 @@ int main() {
     test_failure_modes<Bson>();
     test_bson_failure_modes();
     test_bson_specific();
+    #endif
+    #ifdef ZERIALIZE_HAS_ION
+    test_failure_modes<Ion>();
+    test_ion_failure_modes();
     #endif
 
     // Translate cross-protocol (both directions) built with the same DSL
@@ -1030,6 +1096,28 @@ int main() {
     #if defined(ZERIALIZE_HAS_BSON) && defined(ZERIALIZE_HAS_MSGPACK)
     test_translate_dsl<Bson, MsgPack>();
     test_translate_dsl<MsgPack, Bson>();
+    #endif
+
+    // Ion ↔ other protocols
+    #if defined(ZERIALIZE_HAS_ION) && defined(ZERIALIZE_HAS_JSON)
+    test_translate_dsl<Ion, JSON>();
+    test_translate_dsl<JSON, Ion>();
+    #endif
+    #if defined(ZERIALIZE_HAS_ION) && defined(ZERIALIZE_HAS_MSGPACK)
+    test_translate_dsl<Ion, MsgPack>();
+    test_translate_dsl<MsgPack, Ion>();
+    #endif
+    #if defined(ZERIALIZE_HAS_ION) && defined(ZERIALIZE_HAS_ZERA)
+    test_translate_dsl<Ion, Zera>();
+    test_translate_dsl<Zera, Ion>();
+    #endif
+    #if defined(ZERIALIZE_HAS_ION) && defined(ZERIALIZE_HAS_BEVE)
+    test_translate_dsl<Ion, Beve>();
+    test_translate_dsl<Beve, Ion>();
+    #endif
+    #if defined(ZERIALIZE_HAS_ION) && defined(ZERIALIZE_HAS_BSON)
+    test_translate_dsl<Ion, Bson>();
+    test_translate_dsl<Bson, Ion>();
     #endif
 
     #if defined(ZERIALIZE_HAS_FLEXBUFFERS) && defined(ZERIALIZE_HAS_MSGPACK)

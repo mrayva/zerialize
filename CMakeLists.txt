@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(zerialize VERSION 1.1.0 LANGUAGES CXX)
+project(zerialize VERSION 1.2.0 LANGUAGES CXX)
 
 include(FetchContent)
 
@@ -11,6 +11,7 @@ option(ZERIALIZE_ENABLE_JSON        "Enable JSON (via yyjson)" ON)
 option(ZERIALIZE_ENABLE_CBOR        "Enable CBOR (via jsoncons)" ON)
 option(ZERIALIZE_ENABLE_BSON        "Enable BSON (via jsoncons)" ON)
 option(ZERIALIZE_ENABLE_MSGPACK     "Enable MessagePack (via msgpack-c)" ON)
+option(ZERIALIZE_ENABLE_ION         "Enable Ion binary (built-in, dependency-free)" ON)
 # Off by default: unlike the other protocols above, enabling this raises the
 # C++ standard required by the *whole* zerialize interface target to C++23
 # (glaze's own CMakeLists hard-requires it). See the BEVE block below.
@@ -35,6 +36,13 @@ target_include_directories(${PROJECT_NAME} INTERFACE
 
 # Built-in protocol: ZERA (no external deps)
 target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_ZERA=1)
+
+# Built-in protocol: Ion binary (hand-rolled reader and writer, no external
+# deps -- see include/zerialize/protocols/Ion.md for why this isn't built
+# on ion-c)
+if(ZERIALIZE_ENABLE_ION)
+  target_compile_definitions(${PROJECT_NAME} INTERFACE ZERIALIZE_HAS_ION=1)
+endif()
 
 # -------------------
 # Protocol: FlatBuffers/FlexBuffers
