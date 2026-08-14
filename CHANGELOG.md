@@ -4,6 +4,40 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-08-13
+
+A third protocol backend, hand-rolled from scratch against the wire format —
+no runtime dependency on `ion-c` or `ion-rust`.
+
+### Added
+
+- **Ion binary** (`zerialize::Ion`, [`protocols/ion.hpp`](include/zerialize/protocols/ion.hpp)):
+  both the reader and writer are hand-rolled. `ion-c`'s reader is a single
+  stateful forward-only cursor with no zero-copy view type, which rules it
+  out for a `Deserializer` whose `operator[]` must be `const` and safe to
+  call multiple times in one expression (ordinary generic code relies on
+  this; C++ doesn't guarantee argument evaluation order). The architecture
+  used instead — a small, copyable value handle plus a `shared_ptr`-shared,
+  once-resolved symbol table context — mirrors `ion-rust`'s `lazy` module
+  (`LazyValue`/`LazyStruct`, `Copy`, "immutable; fields can be read any
+  number of times") and reuses the same lifetime pattern `beve.hpp` already
+  uses for the same reason (a raw pointer back to a document that could
+  move on copy is exactly the class of bug that produced a real
+  heap-buffer-overflow in glaze's own lazy reader). Every wire-format
+  detail (VarUInt's continuation-bit convention — the opposite of
+  protobuf/LEB128's; big-endian magnitude/float encoding — the opposite of
+  BEVE's little-endian; the exact local symbol table struct shape) was
+  verified against real bytes produced by `ion-c`'s own writer, and the
+  reader was additionally cross-validated by parsing that real `ion-c`
+  output independently of our own writer. Unlike BSON, Ion values are
+  self-describing at the root, so there's no root document/array ambiguity
+  and no bespoke test carve-out is needed. Enabled via `ZERIALIZE_ENABLE_ION`
+  (default **on** — no new dependency, no C++ standard change). See
+  [`protocols/Ion.md`](include/zerialize/protocols/Ion.md) for the wire
+  format, symbol table design, and known v1 limitations (decimal/timestamp/
+  clob are skippable but not yet exposed as scalars; shared/imported symbol
+  tables are rejected with a clear error rather than silently misread).
+
 ## [1.1.0] - 2026-08-13
 
 Two new protocol backends.

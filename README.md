@@ -21,6 +21,7 @@ Zero-copy multi-format serialization/deserialization for c++20.
 *   **BSON** (writer via jsoncons, reader hand-rolled) — see [`include/zerialize/protocols/BSON.md`](include/zerialize/protocols/BSON.md) (BSON's top-level value is always a document or array — a bare scalar can't be serialized at the root, and a bare array root reads back as a document; see the doc for details)
 *   **ZERA** (built-in, dependency-free binary protocol) — see [`include/zerialize/protocols/ZERA.md`](include/zerialize/protocols/ZERA.md)
 *   **BEVE** (via [glaze](https://github.com/stephenberry/glaze)'s lazy BEVE reader) — opt-in, off by default; see [`include/zerialize/protocols/BEVE.md`](include/zerialize/protocols/BEVE.md) (enabling it, via `ZERIALIZE_ENABLE_BEVE`, raises the required C++ standard from C++20 to C++23)
+*   **Ion** (binary; built-in, dependency-free — no runtime dependency on `ion-c`/`ion-rust`) — see [`include/zerialize/protocols/Ion.md`](include/zerialize/protocols/Ion.md) for the wire format, symbol table handling, and known v1 limitations (decimal/timestamp are skippable but not yet exposed as scalars)
 *   **NOTE:** Zerialize supports the least-common-denominator of serializeable objects: arrays, maps with string keys, and primitives: integers, floats, strings, but also blobs.
 
 ## Building
@@ -35,6 +36,7 @@ Protocol docs:
 - `include/zerialize/protocols/ZERA.md`
 - `include/zerialize/protocols/BEVE.md`
 - `include/zerialize/protocols/BSON.md`
+- `include/zerialize/protocols/Ion.md`
 
 ## Usage
 
