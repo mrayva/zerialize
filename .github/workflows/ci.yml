@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: test_zerialize
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: cmake -B build -S test
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Test
+        run: ./build/test_zerialize
+
+  test-beve:
+    name: test_zerialize (BEVE, C++23)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # BEVE (via glaze) is off by default: enabling it makes the shared
+      # `zerialize` target itself require C++23, which test/CMakeLists.txt
+      # doesn't otherwise ask for (it hardcodes C++20) -- CMake computes a
+      # target's actual required standard from everything it links, so
+      # test_zerialize picks up C++23 automatically here with no other
+      # change needed. Kept as its own job/toolchain rather than folded
+      # into the job above so a compiler without decent C++23 support
+      # doesn't block the (much more commonly exercised) default build.
+      - name: Configure
+        run: cmake -B build -S test -DZERIALIZE_ENABLE_BEVE=ON
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Test
+        run: ./build/test_zerialize
