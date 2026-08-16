@@ -1,4 +1,5 @@
 #include <array>
+#include <limits>
 #include <set>
 #include <span>
 #include <string>
@@ -553,6 +554,47 @@ void test_json_failure_modes() {
     std::cout << "== JSON corruption tests passed ==\n\n";
 }
 
+void test_json_nonfinite_doubles() {
+    std::cout << "== JSON non-finite double tests ==\n";
+
+    // Regression test for a real bug: yyjson_mut_write() (json.hpp's
+    // RootSerializer::finish()) refuses to serialize *any* document
+    // containing a non-finite double at all -- no write flag was passed
+    // to allow NaN/Infinity literals or substitute null, so it failed the
+    // whole write, not just that one value, and finish() turned that into
+    // a thrown std::runtime_error for the entire document. double_() now
+    // writes NaN/Infinity/-Infinity as strings instead (the same
+    // convention pg_zerialize's own decoders use), same as every other
+    // value JSON has no literal syntax for. Found via an actual
+    // end-to-end test (Postgres row w/ Infinity floats -> pg_zerialize ->
+    // pgnats -> NATS -> nats_tool), where every zerialize::translate<JSON>
+    // call failed on that one row, not proactively.
+#ifdef ZERIALIZE_HAS_MSGPACK
+    auto src = serialize<MsgPack>(zmap<"pos_inf", "neg_inf", "nan_val", "finite">(
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::quiet_NaN(),
+        2.5));
+    auto srd = MsgPackDeserializer(src.buf());
+    auto jrd = translate<JSON>(srd);
+
+    if (jrd["pos_inf"].asString() != "Infinity") {
+        throw std::runtime_error("expected pos_inf to translate to the string \"Infinity\"");
+    }
+    if (jrd["neg_inf"].asString() != "-Infinity") {
+        throw std::runtime_error("expected neg_inf to translate to the string \"-Infinity\"");
+    }
+    if (jrd["nan_val"].asString() != "NaN") {
+        throw std::runtime_error("expected nan_val to translate to the string \"NaN\"");
+    }
+    if (jrd["finite"].asDouble() != 2.5) {
+        throw std::runtime_error("expected a finite value in the same document to still translate as a normal number");
+    }
+#endif
+
+    std::cout << "== JSON non-finite double tests passed ==\n\n";
+}
+
 void test_msgpack_failure_modes() {
     std::cout << "== MsgPack corruption tests ==\n";
 
@@ -1009,6 +1051,7 @@ int main() {
     #ifdef ZERIALIZE_HAS_JSON
     test_failure_modes<JSON>();
     test_json_failure_modes();
+    test_json_nonfinite_doubles();
     #endif
     #ifdef ZERIALIZE_HAS_FLEXBUFFERS
     test_failure_modes<Flex>();

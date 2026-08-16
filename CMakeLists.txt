@@ -131,6 +131,14 @@ if(ZERIALIZE_ENABLE_CBOR OR ZERIALIZE_ENABLE_BSON)
   else()
     # Vendor header-only jsoncons
     if(NOT TARGET jsoncons AND NOT TARGET jsoncons::jsoncons)
+      # Without this, jsoncons' own CMakeLists.txt builds its vendored
+      # unit-test suite too, which currently fails under GCC with
+      # -Werror=maybe-uninitialized in one of jsoncons' own test files --
+      # nothing to do with zerialize. Every downstream consumer that
+      # fetches zerialize (and thus transitively jsoncons) has had to
+      # carry this same guard itself (nats_asio, pgnats); setting it here
+      # means new consumers don't have to rediscover it independently.
+      set(JSONCONS_BUILD_TESTS OFF CACHE BOOL "Disable jsoncons tests when vendored" FORCE)
       FetchContent_Declare(
           jsoncons
           GIT_REPOSITORY https://github.com/danielaparker/jsoncons.git
