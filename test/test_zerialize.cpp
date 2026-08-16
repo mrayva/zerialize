@@ -595,6 +595,74 @@ void test_json_nonfinite_doubles() {
     std::cout << "== JSON non-finite double tests passed ==\n\n";
 }
 
+// Regression test: write_value() (translate.hpp) now prefers mapEntries()/
+// elements() over mapKeys()+operator[](key) / arraySize()+operator[](idx)
+// when a protocol implements them, since the latter re-scans the container
+// from the start on every call (O(n) per call, O(n^2) for the whole walk).
+// This checks the fast accessors, where a protocol has them, produce
+// exactly the same keys/values/order as the slower path they're replacing -
+// not just that translate() still round-trips (the existing DSL/dynamic
+// tests already cover that indirectly).
+template<class P>
+void test_fast_accessors() {
+    using V = typename P::Deserializer;
+    std::cout << "== Fast accessor tests for <" << P::Name << "> ==\n";
+
+    auto buf = serialize<P>(zmap<"a", "b", "c">(
+        int64_t(1),
+        zvec(10, 20, 30),
+        zmap<"x", "y">("hello", "world")
+    ));
+    V rd(buf.buf());
+
+    if constexpr (requires { rd.mapEntries(); }) {
+        std::vector<std::string> entry_keys;
+        for (auto&& entry : rd.mapEntries()) entry_keys.push_back(std::string(entry.key));
+
+        std::vector<std::string> plain_keys;
+        for (std::string_view k : rd.mapKeys()) plain_keys.push_back(std::string(k));
+
+        if (entry_keys != plain_keys) {
+            throw std::runtime_error("mapEntries() key order/content differs from mapKeys()");
+        }
+
+        bool saw_a = false, saw_c = false;
+        for (auto&& entry : rd.mapEntries()) {
+            if (entry.key == "a") {
+                saw_a = true;
+                if (entry.value.asInt64() != 1) throw std::runtime_error("mapEntries() value for 'a' wrong");
+            } else if (entry.key == "c") {
+                saw_c = true;
+                if (!entry.value.isMap()) throw std::runtime_error("mapEntries() nested map value lost its map-ness");
+                if (entry.value["x"].asString() != "hello" || entry.value["y"].asString() != "world") {
+                    throw std::runtime_error("mapEntries() nested map value contents wrong");
+                }
+            }
+        }
+        if (!saw_a || !saw_c) throw std::runtime_error("mapEntries() did not visit all expected keys");
+    }
+
+    if constexpr (requires { rd["b"].elements(); }) {
+        auto b = rd["b"];
+        std::vector<int64_t> via_elements;
+        for (auto&& el : b.elements()) via_elements.push_back(el.asInt64());
+
+        std::vector<int64_t> via_index;
+        std::size_t n = b.arraySize();
+        for (std::size_t i = 0; i < n; ++i) via_index.push_back(b[i].asInt64());
+
+        if (via_elements != via_index) {
+            throw std::runtime_error("elements() differs from arraySize()+operator[]");
+        }
+        std::vector<int64_t> expected{10, 20, 30};
+        if (via_elements != expected) {
+            throw std::runtime_error("elements() did not produce the expected array contents");
+        }
+    }
+
+    std::cout << "== Fast accessor tests for <" << P::Name << "> passed ==\n\n";
+}
+
 void test_msgpack_failure_modes() {
     std::cout << "== MsgPack corruption tests ==\n";
 
@@ -1052,34 +1120,42 @@ int main() {
     test_failure_modes<JSON>();
     test_json_failure_modes();
     test_json_nonfinite_doubles();
+    test_fast_accessors<JSON>();
     #endif
     #ifdef ZERIALIZE_HAS_FLEXBUFFERS
     test_failure_modes<Flex>();
+    test_fast_accessors<Flex>();
     #endif
     #ifdef ZERIALIZE_HAS_MSGPACK
     test_failure_modes<MsgPack>();
     test_msgpack_failure_modes();
+    test_fast_accessors<MsgPack>();
     #endif
     #ifdef ZERIALIZE_HAS_CBOR
     test_failure_modes<CBOR>();
+    test_fast_accessors<CBOR>();
     #endif
     #ifdef ZERIALIZE_HAS_ZERA
     test_failure_modes<Zera>();
     test_zer_specific();
     test_tensor_view_alignment();
+    test_fast_accessors<Zera>();
     #endif
     #ifdef ZERIALIZE_HAS_BEVE
     test_failure_modes<Beve>();
     test_beve_failure_modes();
+    test_fast_accessors<Beve>();
     #endif
     #ifdef ZERIALIZE_HAS_BSON
     test_failure_modes<Bson>();
     test_bson_failure_modes();
     test_bson_specific();
+    test_fast_accessors<Bson>();
     #endif
     #ifdef ZERIALIZE_HAS_ION
     test_failure_modes<Ion>();
     test_ion_failure_modes();
+    test_fast_accessors<Ion>();
     #endif
 
     // Translate cross-protocol (both directions) built with the same DSL

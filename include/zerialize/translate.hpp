@@ -46,23 +46,48 @@ inline void write_value(const V& v, W& w) {
 
     if (v.isMap()) {
         // We want stable iteration; use the order the reader exposes.
-        // mapKeys() returns a forward range of string_view (your StringViewRange).
-        std::size_t count = 0;
-        for (auto /*unused*/ _ : v.mapKeys()) (void)_, ++count;
+        // mapEntries(), where the protocol implements it, hands back each
+        // (key, value) pair in a single O(n) forward pass; walking the same
+        // map via mapKeys()+operator[](key) instead is O(n^2), since
+        // operator[] re-scans the map from the start on every call. Fall
+        // back to that O(n^2) path only for protocols that don't (yet)
+        // implement mapEntries().
+        if constexpr (requires { v.mapEntries(); }) {
+            std::size_t count = 0;
+            for (auto&& /*unused*/ _ : v.mapEntries()) (void)_, ++count;
 
-        w.begin_map(count);
-        for (std::string_view k : v.mapKeys()) {
-            w.key(std::string(k));
-            write_value(v[k], w);
+            w.begin_map(count);
+            for (auto&& entry : v.mapEntries()) {
+                w.key(std::string(entry.key));
+                write_value(entry.value, w);
+            }
+            w.end_map();
+        } else {
+            // mapKeys() returns a forward range of string_view (your StringViewRange).
+            std::size_t count = 0;
+            for (auto /*unused*/ _ : v.mapKeys()) (void)_, ++count;
+
+            w.begin_map(count);
+            for (std::string_view k : v.mapKeys()) {
+                w.key(std::string(k));
+                write_value(v[k], w);
+            }
+            w.end_map();
         }
-        w.end_map();
         return;
     }
 
     if (v.isArray()) {
+        // Same reasoning as mapEntries() above: elements() is an O(n)
+        // single-pass walk; arraySize()+operator[](idx) is O(n^2) for
+        // protocols whose operator[] re-scans from the start on every call.
         const std::size_t n = v.arraySize();
         w.begin_array(n);
-        for (std::size_t i = 0; i < n; ++i) write_value(v[i], w);
+        if constexpr (requires { v.elements(); }) {
+            for (auto&& elem : v.elements()) write_value(elem, w);
+        } else {
+            for (std::size_t i = 0; i < n; ++i) write_value(v[i], w);
+        }
         w.end_array();
         return;
     }

@@ -468,6 +468,15 @@ public:
 
     KeysView mapKeys() const { auto h=head(); ensure(h.major==5, "CBOR: not a map"); return KeysView{ buf_, pos_ }; }
 
+    // Like KeysView, but each dereference also hands back the value at that
+    // same position -- avoids the O(n) re-scan-from-start that operator[]
+    // does when a caller wants (key, value) for every entry (walking the
+    // whole map via mapKeys()+operator[] is O(n^2); this is O(n)). Defined
+    // out-of-line below: Entry holds a CborDeserializer by value, which
+    // needs the class to be complete first.
+    struct EntriesView;
+    EntriesView mapEntries() const;
+
     CborDeserializer operator[](std::string_view key) const {
         auto h = head(); ensure(h.major==5, "CBOR: not a map");
         std::size_t q = pos_ + h.hlen;
@@ -499,10 +508,18 @@ public:
             for (std::size_t i=0;i<idx;++i) q = skip(q);
             return CborDeserializer(buf_, q);
         } else {
-            for (std::size_t i=0;;++i){ ensure(q<buf_.size(), "CBOR: trunc indef arr"); if (buf_[q]==0xFF) break; if (i==idx) return CborDeserializer(buf_, q); q = skip(q);}            
+            for (std::size_t i=0;;++i){ ensure(q<buf_.size(), "CBOR: trunc indef arr"); if (buf_[q]==0xFF) break; if (i==idx) return CborDeserializer(buf_, q); q = skip(q);}
             throw DeserializationError("CBOR: index OOB");
         }
     }
+
+    // Sequential single-pass array walk -- avoids the O(n) re-scan-from-
+    // start that operator[](idx) does when a caller wants every element
+    // (walking the whole array via arraySize()+operator[] is O(n^2); this
+    // is O(n)). Defined out-of-line below: iterator::operator*() returns a
+    // CborDeserializer by value, which needs the class to be complete first.
+    struct ElementsView;
+    ElementsView elements() const;
 
     // ---- debug ----
     std::string to_string() const {
@@ -542,6 +559,130 @@ private:
         }
     }
 };
+
+struct CborDeserializer::EntriesView {
+    std::span<const uint8_t> buf;
+    std::size_t start; // pos at start of map head
+
+    struct Entry { std::string_view key; CborDeserializer value; };
+
+    struct iterator {
+        std::span<const uint8_t> buf{};
+        std::size_t q = 0; // current cursor (at next key head or break)
+        uint64_t remaining = 0; // for definite maps
+        bool indefinite = false;
+        mutable std::string scratch;
+
+        using iterator_category = std::forward_iterator_tag;
+        using iterator_concept  = std::forward_iterator_tag;
+        using value_type        = Entry;
+        using difference_type   = std::ptrdiff_t;
+        using reference         = Entry;
+
+        // Reuses KeysView::iterator's read_head()/skip() - same wire-format
+        // walk, kept as a single copy rather than re-duplicated here.
+
+        reference operator*() const {
+            auto kh = KeysView::iterator::read_head(buf, q);
+            std::string_view key;
+            std::size_t val_pos;
+            if (kh.major==3 && !kh.indefinite) {
+                ensure(q + kh.hlen + kh.val <= buf.size(), "CBOR: truncated map key");
+                key = std::string_view(reinterpret_cast<const char*>(&buf[q+kh.hlen]), (std::size_t)kh.val);
+                val_pos = q + kh.hlen + (std::size_t)kh.val;
+            } else {
+                // fallback: materialize (chunked/indefinite string key)
+                CborDeserializer kview(buf, q);
+                scratch = kview.asString();
+                key = std::string_view(scratch);
+                val_pos = KeysView::iterator::skip(buf, q);
+            }
+            return Entry{ key, CborDeserializer(buf, val_pos) };
+        }
+        iterator& operator++() {
+            if (indefinite) {
+                if (buf[q]==0xFF) return *this; // already at end
+                q = KeysView::iterator::skip(buf,q); // key
+                q = KeysView::iterator::skip(buf,q); // value
+            } else {
+                if (remaining==0) return *this;
+                q = KeysView::iterator::skip(buf,q); // key
+                q = KeysView::iterator::skip(buf,q); // value
+                --remaining;
+            }
+            return *this;
+        }
+        iterator operator++(int) { auto t=*this; ++(*this); return t; }
+        friend bool operator==(const iterator& a, const iterator& b) { return a.q==b.q && a.buf.data()==b.buf.data(); }
+    };
+
+    iterator begin() const {
+        iterator it; it.buf = buf; auto h = KeysView::iterator::read_head(buf, start); std::size_t q = start + h.hlen; it.q = q; it.indefinite = h.indefinite; it.remaining = h.indefinite ? 0 : (uint64_t)h.val; return it;
+    }
+    iterator end() const {
+        iterator it; it.buf = buf; auto h = KeysView::iterator::read_head(buf, start);
+        if (!h.indefinite) {
+            std::size_t q = start + h.hlen; for (uint64_t i=0;i<h.val;++i){ q = KeysView::iterator::skip(buf,q); q = KeysView::iterator::skip(buf,q);} it.q = q; it.indefinite=false; it.remaining=0; return it;
+        } else {
+            std::size_t q = start + h.hlen; for(;;){ ensure(q < buf.size(), "CBOR: truncated indef map"); if (buf[q]==0xFF){ it.q=q+1; break; } q = KeysView::iterator::skip(buf,q); q = KeysView::iterator::skip(buf,q);} it.indefinite=true; return it;
+        }
+    }
+};
+
+inline CborDeserializer::EntriesView CborDeserializer::mapEntries() const {
+    auto h = head(); ensure(h.major==5, "CBOR: not a map");
+    return EntriesView{ buf_, pos_ };
+}
+
+struct CborDeserializer::ElementsView {
+    std::span<const uint8_t> buf;
+    std::size_t start; // pos at start of array head
+
+    struct iterator {
+        std::span<const uint8_t> buf{};
+        std::size_t q = 0;
+        uint64_t remaining = 0;
+        bool indefinite = false;
+
+        using iterator_category = std::forward_iterator_tag;
+        using iterator_concept  = std::forward_iterator_tag;
+        using value_type        = CborDeserializer;
+        using difference_type   = std::ptrdiff_t;
+        using reference         = CborDeserializer;
+
+        reference operator*() const { return CborDeserializer(buf, q); }
+        iterator& operator++() {
+            if (indefinite) {
+                if (buf[q]==0xFF) return *this;
+                q = KeysView::iterator::skip(buf,q);
+            } else {
+                if (remaining==0) return *this;
+                q = KeysView::iterator::skip(buf,q);
+                --remaining;
+            }
+            return *this;
+        }
+        iterator operator++(int) { auto t=*this; ++(*this); return t; }
+        friend bool operator==(const iterator& a, const iterator& b) { return a.q==b.q && a.buf.data()==b.buf.data(); }
+    };
+
+    iterator begin() const {
+        iterator it; it.buf = buf; auto h = KeysView::iterator::read_head(buf, start); std::size_t q = start + h.hlen; it.q=q; it.indefinite=h.indefinite; it.remaining = h.indefinite?0:(uint64_t)h.val; return it;
+    }
+    iterator end() const {
+        iterator it; it.buf = buf; auto h = KeysView::iterator::read_head(buf, start);
+        if (!h.indefinite) {
+            std::size_t q = start+h.hlen; for(uint64_t i=0;i<h.val;++i) q=KeysView::iterator::skip(buf,q); it.q=q; it.indefinite=false; it.remaining=0; return it;
+        } else {
+            std::size_t q = start+h.hlen; for(;;){ ensure(q<buf.size(),"CBOR: truncated indef arr"); if(buf[q]==0xFF){it.q=q+1;break;} q=KeysView::iterator::skip(buf,q);} it.indefinite=true; return it;
+        }
+    }
+};
+
+inline CborDeserializer::ElementsView CborDeserializer::elements() const {
+    auto h = head(); ensure(h.major==4, "CBOR: not an array");
+    return ElementsView{ buf_, pos_ };
+}
 
 } // namespace cborjc
 

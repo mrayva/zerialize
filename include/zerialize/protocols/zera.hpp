@@ -400,6 +400,15 @@ public:
         return KeysView{this, entries, count};
     }
 
+    // Like KeysView, but each dereference also hands back the value at that
+    // same position -- avoids the O(n) linear scan that operator[](key)
+    // does when a caller wants (key, value) for every entry (walking the
+    // whole object via mapKeys()+operator[] is O(n^2); this is O(n)).
+    // Defined out-of-line below: Entry holds a ZeraValue, which needs that
+    // class to be complete first.
+    struct EntriesView;
+    EntriesView mapEntries() const;
+
     bool contains(std::string_view key) const {
         if (!isMap()) return false;
         (void)require_flags_ok();
@@ -484,6 +493,60 @@ inline ZeraValue ZeraViewBase::operator[](std::string_view key) const {
     throw DeserializationError("zera: key not found: " + std::string(key));
 }
 
+struct ZeraViewBase::EntriesView {
+    const ZeraViewBase* self = nullptr;
+    const std::uint8_t* p = nullptr;
+    std::uint32_t count = 0;
+
+    struct Entry { std::string_view key; ZeraValue value; };
+
+    struct iterator {
+        const ZeraViewBase* self = nullptr;
+        const std::uint8_t* cur = nullptr;
+        std::uint32_t i = 0;
+        std::uint32_t n = 0;
+        using iterator_category = std::forward_iterator_tag;
+        using iterator_concept  = std::forward_iterator_tag;
+        using value_type        = Entry;
+        using difference_type   = std::ptrdiff_t;
+        using reference         = Entry;
+
+        reference operator*() const {
+            if (i >= n) ZeraViewBase::fail("zera: EntriesView deref out of range");
+            const auto key_len = read_u16_le(cur);
+            (void)self->env_ptr_at(std::uint32_t(cur - self->env_), 4 + key_len + 16);
+            std::string_view key(reinterpret_cast<const char*>(cur + 4), key_len);
+            const auto* value_vr = cur + 4 + key_len;
+            return Entry{ key, ZeraValue(*self, value_vr) };
+        }
+
+        iterator& operator++() {
+            if (i >= n) return *this;
+            const auto key_len = read_u16_le(cur);
+            const std::size_t adv = 4 + std::size_t(key_len) + 16;
+            const auto cur_ofs = std::uint32_t(cur - self->env_);
+            cur = self->env_ptr_at(cur_ofs + std::uint32_t(adv), 0);
+            ++i;
+            return *this;
+        }
+        iterator operator++(int) { iterator tmp = *this; ++(*this); return tmp; }
+        friend bool operator==(const iterator& a, const iterator& b) { return a.self==b.self && a.i==b.i && a.n==b.n; }
+    };
+
+    iterator begin() const { return iterator{self, p, 0, count}; }
+    iterator end() const { return iterator{self, p, count, count}; }
+};
+
+inline ZeraViewBase::EntriesView ZeraViewBase::mapEntries() const {
+    require(tag() == Tag::Object, "zera: not a map");
+    require_flags_ok();
+    const std::uint32_t obj_ofs = a();
+    const auto* p = env_ptr_at(obj_ofs, 4);
+    const std::uint32_t count = read_u32_le(p);
+    const auto* entries = env_ptr_at(obj_ofs + 4, 0);
+    return EntriesView{this, entries, count};
+}
+
 class ZeraDeserializer final : public ZeraViewBase {
     std::vector<std::uint8_t> owned_;
     std::span<const std::uint8_t> view_{};
@@ -556,6 +619,7 @@ public:
     using ZeraViewBase::asBool;
     using ZeraViewBase::asBlob;
     using ZeraViewBase::mapKeys;
+    using ZeraViewBase::mapEntries;
     using ZeraViewBase::contains;
     using ZeraViewBase::arraySize;
     using ZeraViewBase::operator[];

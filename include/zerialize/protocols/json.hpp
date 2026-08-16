@@ -197,6 +197,15 @@ public:
         return KeysView{cur_};
     }
 
+    // Like KeysView, but each dereference also hands back the value at that
+    // same position -- avoids the O(n) yyjson_obj_getn() re-scan-from-start
+    // that operator[](key) does when a caller wants (key, value) for every
+    // entry (walking the whole object via mapKeys()+operator[] is O(n^2);
+    // this is O(n)). Defined out-of-line below: Entry holds a
+    // JsonDeserializer by value, which needs the class to be complete first.
+    struct EntriesView;
+    EntriesView mapEntries() const;
+
     JsonDeserializer operator[](std::string_view key) const {
         check(yyjson_is_obj, "map/object");
         yyjson_val* v = yyjson_obj_getn(cur_, key.data(), key.size());
@@ -216,6 +225,16 @@ public:
         return JsonDeserializer(v, doc_); // view
     }
 
+    // Sequential single-pass array walk -- yyjson_arr_get(idx) is only O(1)
+    // for "flat" arrays (no nested containers); any array containing a
+    // nested object/array falls back to an O(n) scan per call, so walking
+    // the whole array via arraySize()+operator[] is O(n^2) in the general
+    // case. This is O(n). Defined out-of-line below: iterator::operator*()
+    // returns a JsonDeserializer by value, which needs the class to be
+    // complete first.
+    struct ElementsView;
+    ElementsView elements() const;
+
     // --- debug helper ---
     std::string to_string(bool pretty = true) const {
         if (!cur_) return "null";
@@ -231,6 +250,113 @@ public:
     yyjson_doc* raw_doc() const { return doc_; }
     yyjson_val* raw_val() const { return cur_; }
 };
+
+struct JsonDeserializer::EntriesView {
+    yyjson_val* obj; // must be a yyjson object value
+    yyjson_doc* doc;
+
+    struct Entry { std::string_view key; JsonDeserializer value; };
+
+    struct iterator {
+        yyjson_val*     owner = nullptr; // which object we're iterating
+        yyjson_doc*     doc = nullptr;
+        yyjson_obj_iter it{};
+        yyjson_val*     key = nullptr;   // current key node (nullptr == end)
+
+        using iterator_concept  = std::forward_iterator_tag;
+        using iterator_category = std::forward_iterator_tag;
+        using value_type        = Entry;
+        using difference_type   = std::ptrdiff_t;
+        using reference         = Entry;
+
+        iterator() = default;
+
+        explicit iterator(yyjson_val* o, yyjson_doc* d, bool to_end) : owner(o), doc(d) {
+            if (o) yyjson_obj_iter_init(o, &it);
+            key = (to_end || !o) ? nullptr : yyjson_obj_iter_next(&it);
+        }
+
+        reference operator*() const {
+            yyjson_val* val = yyjson_obj_iter_get_val(key);
+            return Entry{
+                std::string_view(yyjson_get_str(key), yyjson_get_len(key)),
+                JsonDeserializer(val, doc)
+            };
+        }
+
+        iterator& operator++() {
+            key = yyjson_obj_iter_next(&it);
+            return *this;
+        }
+        iterator operator++(int) {
+            iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        friend bool operator==(const iterator& a, const iterator& b) {
+            return a.owner == b.owner && a.key == b.key;
+        }
+        friend bool operator!=(const iterator& a, const iterator& b) {
+            return !(a == b);
+        }
+    };
+
+    iterator begin() const { return iterator{obj, doc, /*to_end*/false}; }
+    iterator end()   const { return iterator{obj, doc, /*to_end*/true};  }
+};
+
+inline JsonDeserializer::EntriesView JsonDeserializer::mapEntries() const {
+    check(yyjson_is_obj, "map/object");
+    return EntriesView{cur_, doc_};
+}
+
+struct JsonDeserializer::ElementsView {
+    yyjson_val* arr; // must be a yyjson array value
+    yyjson_doc* doc;
+
+    struct iterator {
+        yyjson_arr_iter it{};
+        yyjson_val*     cur = nullptr; // current element (nullptr == end)
+        yyjson_doc*     doc = nullptr;
+
+        using iterator_concept  = std::forward_iterator_tag;
+        using iterator_category = std::forward_iterator_tag;
+        using value_type        = JsonDeserializer;
+        using difference_type   = std::ptrdiff_t;
+        using reference         = JsonDeserializer;
+
+        iterator() = default;
+
+        explicit iterator(yyjson_val* a, yyjson_doc* d, bool to_end) : doc(d) {
+            if (a) yyjson_arr_iter_init(a, &it);
+            cur = (to_end || !a) ? nullptr : yyjson_arr_iter_next(&it);
+        }
+
+        reference operator*() const { return JsonDeserializer(cur, doc); }
+
+        iterator& operator++() {
+            cur = yyjson_arr_iter_next(&it);
+            return *this;
+        }
+        iterator operator++(int) {
+            iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        friend bool operator==(const iterator& a, const iterator& b) { return a.cur == b.cur; }
+        friend bool operator!=(const iterator& a, const iterator& b) { return !(a == b); }
+    };
+
+    iterator begin() const { return iterator{arr, doc, /*to_end*/false}; }
+    iterator end()   const { return iterator{arr, doc, /*to_end*/true};  }
+};
+
+inline JsonDeserializer::ElementsView JsonDeserializer::elements() const {
+    check(yyjson_is_arr, "array");
+    return ElementsView{cur_, doc_};
+}
 
 
 
