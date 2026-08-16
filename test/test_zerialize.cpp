@@ -395,6 +395,132 @@ void test_translate_dsl() {
     std::cout << "== Translate (DSL) <" << SrcP::Name << "> → <" << DstP::Name << "> passed ==\n\n";
 }
 
+// --------------------- Columnar <-> row-array (DSL-built) ----------------
+// expand_columnar()/collapse_columnar() - see columnar.hpp. Round-trips a
+// columnar record (every field an equal-length array) through expand ->
+// collapse and checks it comes back byte-identical in shape/values, same
+// protocol on both ends.
+template<class P>
+void test_columnar_dsl() {
+    std::cout << "== Columnar round-trip <" << P::Name << "> ==\n";
+
+    // expand_columnar()/collapse_columnar() both finish their own
+    // Root/Writer internally and hand back an already-serialized
+    // P::Deserializer (see columnar.hpp) - unlike test_translate_dsl's
+    // checks, there's no separate ZBuffer-producing step to hand to
+    // test_serialization()'s build_fn/test_fn split, so this asserts
+    // directly (matching test_columnar_errors()'s style) rather than
+    // trying to force this shape through that helper.
+
+    {
+        // {"id":[1,2,3], "name":["a","b","c"]}
+        auto src = serialize<P>( zmap<"id","name">(zvec(1,2,3), zvec("a","b","c")) );
+        auto srd = typename P::Deserializer(src.buf());
+
+        auto expanded = expand_columnar<P>(srd);
+        if (!expanded.isArray() || expanded.arraySize() != 3) {
+            throw std::runtime_error("expand_columnar: expected a 3-element row array");
+        }
+        if (expanded[0]["id"].asInt64() != 1 || expanded[0]["name"].asString() != "a" ||
+            expanded[1]["id"].asInt64() != 2 || expanded[1]["name"].asString() != "b" ||
+            expanded[2]["id"].asInt64() != 3 || expanded[2]["name"].asString() != "c") {
+            throw std::runtime_error("expand_columnar: row contents didn't match");
+        }
+        std::cout << "   OK columnar: expand produces the expected row array\n";
+
+        auto collapsed = collapse_columnar<P>(expanded);
+        if (!collapsed.isMap() ||
+            collapsed["id"].arraySize() != 3 || collapsed["id"][0].asInt64() != 1 ||
+            collapsed["id"][2].asInt64() != 3 || collapsed["name"].arraySize() != 3 ||
+            collapsed["name"][1].asString() != "b") {
+            throw std::runtime_error("collapse_columnar: didn't round-trip back to the original columnar shape");
+        }
+        std::cout << "   OK columnar: collapse round-trips back to the original shape\n";
+    }
+
+    {
+        auto src = serialize<P>( zmap<>() );
+        auto srd = typename P::Deserializer(src.buf());
+        auto expanded = expand_columnar<P>(srd);
+        if (!expanded.isArray() || expanded.arraySize() != 0) {
+            throw std::runtime_error("expand_columnar: empty columnar record should expand to an empty array");
+        }
+        std::cout << "   OK columnar: empty columnar record expands to an empty array\n";
+    }
+
+    {
+        auto src = serialize<P>( zvec() );
+        auto srd = typename P::Deserializer(src.buf());
+        auto collapsed = collapse_columnar<P>(srd);
+        if (!collapsed.isMap()) {
+            throw std::runtime_error("collapse_columnar: empty row array should collapse to an (empty) object");
+        }
+        std::cout << "   OK columnar: empty row array collapses to an object\n";
+    }
+
+    std::cout << "== Columnar round-trip <" << P::Name << "> passed ==\n\n";
+}
+
+// Validation/error-path coverage - protocol-independent logic (columnar.hpp
+// doesn't branch on format), so exercised once rather than per-protocol.
+#ifdef ZERIALIZE_HAS_JSON
+void test_columnar_errors() {
+    std::cout << "== Columnar error paths ==\n";
+
+    auto expect_throw = [](const char* label, auto&& fn) {
+        bool threw = false;
+        try { fn(); }
+        catch (const std::runtime_error&) { threw = true; }
+        if (!threw) throw std::runtime_error(std::string("expected throw: ") + label);
+        std::cout << "   OK (threw as expected): " << label << "\n";
+    };
+
+    expect_throw("expand_columnar: root not an object", [](){
+        auto src = serialize<JSON>( zvec(1,2,3) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)expand_columnar<JSON>(srd);
+    });
+
+    expect_throw("expand_columnar: a field is not an array", [](){
+        auto src = serialize<JSON>( zmap<"a">(42) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)expand_columnar<JSON>(srd);
+    });
+
+    expect_throw("expand_columnar: mismatched column lengths", [](){
+        auto src = serialize<JSON>( zmap<"a","b">(zvec(1,2,3), zvec(1,2)) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)expand_columnar<JSON>(srd);
+    });
+
+    expect_throw("collapse_columnar: root not an array", [](){
+        auto src = serialize<JSON>( zmap<"a">(1) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)collapse_columnar<JSON>(srd);
+    });
+
+    expect_throw("collapse_columnar: a row is not an object", [](){
+        auto src = serialize<JSON>( zvec(zmap<"a">(1), 42) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)collapse_columnar<JSON>(srd);
+    });
+
+    expect_throw("collapse_columnar: rows have different field sets", [](){
+        auto src = serialize<JSON>( zvec(zmap<"a","b">(1,2), zmap<"a">(3)) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)collapse_columnar<JSON>(srd);
+    });
+
+    expect_throw("collapse_columnar: a row is missing a field row 0 has", [](){
+        auto src = serialize<JSON>( zvec(zmap<"a","b">(1,2), zmap<"a","c">(3,4)) );
+        auto srd = JSON::Deserializer(src.buf());
+        (void)collapse_columnar<JSON>(srd);
+    });
+
+    std::cout << "== Columnar error paths passed ==\n\n";
+}
+#endif
+
 // --------------------- Custom struct tests ---------------------
 struct User { 
     std::string name; 
@@ -1271,6 +1397,57 @@ int main() {
     #ifdef ZERIALIZE_HAS_MSGPACK
     test_translate_dsl<CBOR, MsgPack>();
     #endif
+    #endif
+
+    // Columnar <-> row-array round-trip, same protocol on both ends.
+    #ifdef ZERIALIZE_HAS_JSON
+    test_columnar_dsl<JSON>();
+    #endif
+    #ifdef ZERIALIZE_HAS_MSGPACK
+    test_columnar_dsl<MsgPack>();
+    #endif
+    #ifdef ZERIALIZE_HAS_FLEXBUFFERS
+    test_columnar_dsl<Flex>();
+    #endif
+    #ifdef ZERIALIZE_HAS_CBOR
+    test_columnar_dsl<CBOR>();
+    #endif
+    #ifdef ZERIALIZE_HAS_ZERA
+    test_columnar_dsl<Zera>();
+    #endif
+    #ifdef ZERIALIZE_HAS_BEVE
+    test_columnar_dsl<Beve>();
+    #endif
+    #ifdef ZERIALIZE_HAS_ION
+    test_columnar_dsl<Ion>();
+    #endif
+    // Bson excluded from test_columnar_dsl<P>() for the same reason it's
+    // excluded from test_protocol_dsl<P>() - see test_bson_specific().
+
+    #ifdef ZERIALIZE_HAS_JSON
+    test_columnar_errors();
+    #endif
+
+    // Cross-protocol columnar convenience wrapper - the realistic nats_tool
+    // use case: a columnar record received in one wire format, expanded
+    // straight into another (e.g. MsgPack -> JSON) in one call.
+    #if defined(ZERIALIZE_HAS_MSGPACK) && defined(ZERIALIZE_HAS_JSON)
+    {
+        std::cout << "== Columnar cross-protocol <MsgPack> -> <JSON> ==\n";
+        auto src = serialize<MsgPack>( zmap<"id","name">(zvec(1,2,3), zvec("a","b","c")) );
+        auto srd = MsgPack::Deserializer(src.buf());
+        auto expanded = expand_columnar<JSON>(srd);
+        if (!expanded.isArray() || expanded.arraySize() != 3 ||
+            expanded[0]["id"].asInt64() != 1 || expanded[0]["name"].asString() != "a") {
+            throw std::runtime_error("cross-protocol expand_columnar<JSON>(MsgPack) failed");
+        }
+        auto collapsed = collapse_columnar<MsgPack>(expanded);
+        if (!collapsed.isMap() || collapsed["id"].arraySize() != 3 ||
+            collapsed["id"][2].asInt64() != 3 || collapsed["name"][1].asString() != "b") {
+            throw std::runtime_error("cross-protocol collapse_columnar<MsgPack>(JSON) failed");
+        }
+        std::cout << "== Columnar cross-protocol <MsgPack> -> <JSON> passed ==\n\n";
+    }
     #endif
 
     std::cout << "\nAll tests complete ✅\n";

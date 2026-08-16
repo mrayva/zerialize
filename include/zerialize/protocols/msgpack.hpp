@@ -11,6 +11,7 @@
 #include <sstream>
 #include <iterator>
 #include <type_traits>
+#include <limits>
 
 #include <msgpack.h> // for the writer
 #include <zerialize/zbuffer.hpp>
