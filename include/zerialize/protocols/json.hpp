@@ -5,6 +5,7 @@
 #include <span>
 #include <set>
 #include <iterator>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -319,7 +320,27 @@ struct Serializer {
     void boolean(bool v)        { push_value(yyjson_mut_bool(doc(), v)); }
     void int64(std::int64_t v)  { push_value(yyjson_mut_sint(doc(), v)); }
     void uint64(std::uint64_t v){ push_value(yyjson_mut_uint(doc(), v)); }
-    void double_(double v)      { push_value(yyjson_mut_real(doc(), v)); }
+    // yyjson_mut_write() (see finish() below) refuses to serialize a
+    // document containing a non-finite double at all -- it has no flag
+    // passed to allow NaN/Infinity literals or substitute null, so it
+    // just fails the whole write with YYJSON_WRITE_ERROR_NAN_OR_INF,
+    // which finish() turns into a thrown std::runtime_error for the
+    // *entire* document, not just this one value. Write NaN/Infinity/
+    // -Infinity as strings instead, the same convention used throughout
+    // this library's other protocols and consumers (pg_zerialize's own
+    // decoders in particular) for representing values JSON has no
+    // literal syntax for.
+    void double_(double v) {
+        if (std::isfinite(v)) {
+            push_value(yyjson_mut_real(doc(), v));
+        } else if (std::isnan(v)) {
+            push_value(yyjson_mut_strn(doc(), "NaN", 3));
+        } else if (v > 0) {
+            push_value(yyjson_mut_strn(doc(), "Infinity", 8));
+        } else {
+            push_value(yyjson_mut_strn(doc(), "-Infinity", 9));
+        }
+    }
     void string(std::string_view sv) {
         push_value(yyjson_mut_strn(doc(), sv.data(), sv.size()));
     }
